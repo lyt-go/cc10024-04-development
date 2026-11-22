@@ -59,6 +59,7 @@ npm run dev
 | 脚本调度 | `script_schedule` | 调度计划 | 计划编号、关联脚本、触发条件 |
 | 登录凭证 | `login_mgr` | 登录凭证 | 凭证编号、目标站点、认证方式 |
 | 页面快照 | `page_snapshot` | 页面快照 | 快照编号、采集来源、页面版本 |
+| 站点归属 | `site_attribution` | 站点归属 | 归属编号、采集归属、入口地址、落地地址、运行身份 |
 | 错误恢复 | `error_recover` | 恢复任务 | 任务编号、关联计划、失败步骤 |
 | 页面去重 | `page_dedup` | 去重规则 | 规则编号、去重维度、特征字段 |
 | 字段归一化 | `field_normalize` | 归一规则 | 规则编号、关联字段、归一类型 |
@@ -76,6 +77,47 @@ npm run dev
   `frontend/src/domain/<模块>.ts`，用于承载真实业务差异并维持36题位容量。
 - 列表接口统一返回 `{ items, total, page, size }`，动作接口统一返回 `{ ok, message }`。
 - 状态流转只允许在 `app/services` 里改，路由层不做业务判断。
+
+## 站点归属与跳转采集
+
+页面快照只保存页面地址和摘要，跨站跳转时无法回答「这次抓取从哪个入口进来、
+落在哪个站点、属于哪一次运行」。`site_attribution` 模块补上正式站点归属清单：
+
+- **一次抓取一行，只记一个主站点**。主站点是采集归属站点：跳转采集归入口站点，
+  直接采集归自身站点。入口站点、落地站点分别保留，采集团队按入口核对覆盖
+  （`entry_site`），处理正文的团队按落地站点找可复采来源（`landing_site`）。
+- **重送不重复计数**。同一次抓取按 `(运行身份, 入口地址, 落地地址)` 判重，
+  重送只往 `processing.jsonl` 追加处理记录，`crawl_count` 恒为 1。
+- **运行确认后按归属去重**。`run_history` 确认完成时按运行身份取归属清单，
+  在**同一次运行内**按正文指纹分组，另一个运行的相同页面不会计入；
+  写出 `data/dedup/groups.json|jsonl` 和代表页来源 `representatives.jsonl`。
+  代表页优先直接采集，供复采执行回放落地地址。
+- **站点隔离**。查看分组/明细、复采、入口回查都要带站点标识，只有持有该次抓取
+  采集归属的站点才看得到明细，共享正文时不串号。
+
+主要接口（固定路径，注册在通用资源路由之前）：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /api/site_attribution/captures` | 登记一次/多次抓取，重送只追加处理记录 |
+| `GET /api/site_attribution/captures?run_id=` | 采集台账，每次真实抓取一行 |
+| `GET /api/site_attribution/manifest?run_id=&entry_site=&landing_site=` | 正式归属清单 |
+| `GET /api/site_attribution/lookup?attribution_id=&site=` | 入口回查，站点无归属时 404 |
+| `POST /api/site_attribution/dedup` | `{"run_id": ...}` 按运行执行去重 |
+| `GET /api/site_attribution/groups?run_id=&site=` | 去重分组（组内明细按站点裁剪） |
+| `GET /api/site_attribution/groups/{id}/recrawl?site=` | 复采来源记录 |
+| `GET /api/run_history/{id}/dedup?site=` | 运行记录视角的分组与代表页来源 |
+
+每次抓取落盘到 `data/attributions/captures.json`（台账）、`manifest.jsonl`（正式清单）
+和 `processing.jsonl`（重送处理记录）；去重产物在 `data/dedup/`。
+
+## 测试
+
+```bash
+cd backend
+.venv/bin/python tests/test_cross_module.py
+.venv/bin/python tests/test_site_attribution.py
+```
 
 领域：数据工程
 子方向：数据采集、爬虫与RPA

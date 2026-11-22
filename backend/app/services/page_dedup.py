@@ -1,4 +1,8 @@
-"""页面去重领域服务：页面内容相似度检测与去重，消费page_snapshot快照数据，为export_channel提供去重结果。"""
+"""页面去重领域服务：页面内容相似度检测与去重，消费站点归属清单与page_snapshot快照数据。
+
+运行确认时由 ``dedup_groups`` 按归属清单执行实际去重；本服务保留通用指纹计算与
+「对给定页面列表去重」的能力，供页面去重模块的规则维护和独立调用使用。
+"""
 from __future__ import annotations
 
 import hashlib
@@ -6,6 +10,7 @@ from typing import Any
 
 from app.store import store
 from app.services.base import BaseModuleService
+from app.services import dedup_groups
 from app import persistence as persist
 
 
@@ -49,11 +54,16 @@ class PageDedupService(BaseModuleService):
         persist.append_jsonl("reports", "dedup_report.jsonl", result)
         return result
 
+    def deduplicate_run(self, run_id: str, rule_id: int | None = None) -> dict[str, Any]:
+        """按站点归属清单对一次运行的采集台账执行去重，产出正式分组与代表页来源。"""
+        return dedup_groups.group_captures(run_id, trigger="page_dedup", rule_id=rule_id)
+
     def domain_snapshot(self) -> dict[str, Any]:
         base = super().domain_snapshot()
         # 去重报告消费
         reports = persist.read_jsonl("reports", "dedup_report.jsonl")
         base["dedup_reports"] = len(reports)
+        base.update({f"group_{key}": value for key, value in dedup_groups.stats().items()})
         # 关联的导出配置
         channels = store.rows("export_channel")
         base["export_channels"] = len(channels)
